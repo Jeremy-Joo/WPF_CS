@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TekkenStats.Cli/TekkenStats.Cli.csproj" />
+  <Project Path="TekkenStats.Core/TekkenStats.Core.csproj" />
+  <Project Path="TekkenStats.Wpf/TekkenStats.Wpf.csproj" />
+</Solution>

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ConfuserEx 난독화 설정.
+  사용:  ConfuserEx.CLI.exe TekkenStats.Confuser.crproj
+  대상:  dist\fd (프레임워크 종속 퍼블리시 출력) 의 DLL 들.
+  결과:  dist\fd\obfuscated\
+
+  핵심 IP(수집·파싱 로직)인 TekkenStats.Core 는 강하게,
+  WPF UI 는 XAML 바인딩이 깨지지 않도록 rename 없이 가볍게 처리한다.
+  (ConfuserEx 는 Core 의 멤버를 rename 하면서 Wpf 의 참조도 자동 갱신하므로,
+   Wpf 자체 멤버만 rename 에서 빠지면 XAML 바인딩이 보존된다.)
+-->
+<project outputDir="obfuscated" baseDir="dist\fd" xmlns="http://confuser.codeplex.com">
+
+  <!-- 민감 로직: 강한 난독화 -->
+  <module path="TekkenStats.Core.dll">
+    <rule pattern="true" inherit="false">
+      <protection id="rename" />
+      <protection id="ctrl flow" />
+      <protection id="constants" />
+      <protection id="ref proxy" />
+      <protection id="anti debug" />
+    </rule>
+  </module>
+
+  <!-- WPF UI: rename 제외(XAML 바인딩 보호), 상수/흐름만 -->
+  <module path="TekkenStats.Wpf.dll">
+    <rule pattern="true" inherit="false">
+      <protection id="ctrl flow" />
+      <protection id="constants" />
+    </rule>
+  </module>
+
+</project>

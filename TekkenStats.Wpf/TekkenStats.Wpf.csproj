@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <LangVersion>latest</LangVersion>
+    <RootNamespace>TekkenStats.Wpf</RootNamespace>
+    <AssemblyName>TekkenStats.Wpf</AssemblyName>
+    <ApplicationIcon>jack.ico</ApplicationIcon>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TekkenStats.Core\TekkenStats.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 창 제목표시줄 아이콘용 (Window Icon="jack.ico") -->
+    <Resource Include="jack.ico" />
+  </ItemGroup>
+
+</Project>
