@@ -60,6 +60,9 @@ public static class EwgfCollector
         }
         catch (Exception ex)
         {
+            log($"[오류 상세] {ex.GetType().Name}: {ex.Message}");
+            for (var inner = ex.InnerException; inner != null; inner = inner.InnerException)
+                log($"[내부 오류] {inner.GetType().Name}: {inner.Message}");
             return new Result(playerId, 0, null, BrowserSession.Friendly(ex));
         }
     }

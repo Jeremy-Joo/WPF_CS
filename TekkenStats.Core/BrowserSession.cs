@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Playwright;
 
 namespace TekkenStats.Core;
@@ -6,29 +7,53 @@ namespace TekkenStats.Core;
 /// <summary>
 /// 실제 크롬을 디버그 모드로 직접 띄우고 CDP 로 연결한다(파이썬 launch_chrome_and_connect 포팅).
 /// Playwright 가 띄우는 '자동화 브라우저'가 아니라 정상 크롬이라 Cloudflare 봇 탐지를 크게 회피한다.
+///
+/// 중요: Cloudflare 챌린지가 떠 있는 동안에는 Playwright(CDP 클라이언트)를 붙이지 않는다.
+/// CDP 로 Runtime 도메인이 켜지면 Cloudflare Turnstile 이 자동화로 탐지해 사람이 체크박스를
+/// 눌러도 토큰을 무효 처리하고 챌린지를 무한 재출제하기 때문이다. 그래서 챌린지 통과 감지는
+/// CDP 의 HTTP 엔드포인트(/json/list)의 페이지 title 로만 하고, 통과 후에야 Playwright 를 붙인다.
 /// </summary>
 public sealed class BrowserSession : IAsyncDisposable
 {
     public const int CdpPort = 9222;
     public static string CdpUrl => $"http://127.0.0.1:{CdpPort}";
+    public static string DefaultProfileDir => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "TekkenRecordMaker", "browser_profile");
     public const int ChallengeWaitMs = 180_000;  // Cloudflare 수동 통과 대기
     public const int RowsWaitMs = 15_000;
 
-    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(1) };
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromSeconds(2) };
 
     private readonly string _profileDir;
     private readonly Action<string>? _log;
     private IPlaywright? _pw;
     private IBrowser? _browser;
     private Process? _chrome;
+    private string _startUrl = "";
+    private bool _freshLaunch;
 
     public IBrowserContext Context { get; private set; } = default!;
     public IPage Page { get; private set; } = default!;
 
     public BrowserSession(string profileDir, Action<string>? log = null)
     {
-        _profileDir = profileDir;
+        _profileDir = string.IsNullOrWhiteSpace(profileDir)
+            ? DefaultProfileDir
+            : Environment.ExpandEnvironmentVariables(profileDir);
         _log = log;
+    }
+
+    /// <summary>예외 메시지를 사용자에게 보일 친절한 안내로 변환.</summary>
+    public static string Friendly(Exception ex)
+    {
+        string m = ex.Message ?? "";
+        string t = ex.GetType().Name;
+        // TargetClosed = CDP 연결 도중 크롬(브라우저) 프로세스가 종료됨.
+        if (t.Contains("TargetClosed", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("Process exited", StringComparison.OrdinalIgnoreCase))
+            return "자동화 구성요소(드라이버 node.exe 또는 크롬)가 실행 직후 종료됐습니다. 보통 ① Visual C++ 2015–2022 재배포 패키지(x64)가 없거나 ② 백신/보안 프로그램이 node.exe·크롬을 차단한 경우입니다. 위 [진단] 로그를 확인하고, 먼저 VC++ x64 재배포 패키지를 설치해 보세요(https://aka.ms/vs/17/release/vc_redist.x64.exe).";
+        return m;
     }
 
     /// <summary>설치된 크롬(우선) 또는 엣지 실행 파일 경로.</summary>
@@ -58,14 +83,21 @@ public sealed class BrowserSession : IAsyncDisposable
         catch { return false; }
     }
 
-    /// <summary>크롬을 디버그 모드로 띄우고 CDP 로 연결한다.</summary>
+    /// <summary>
+    /// 크롬을 디버그 모드로 띄운다. 이 단계에서는 Playwright 를 붙이지 않는다(순수 크롬 상태에서
+    /// Cloudflare 를 통과시키기 위함). 연결은 통과 후 <see cref="ConnectAsync"/> 에서 한다.
+    /// </summary>
     public async Task StartAsync(string startUrl)
     {
+        _startUrl = startUrl;
+        Directory.CreateDirectory(_profileDir);
+
         if (!await CdpReadyAsync())
         {
             string exe = FindBrowserExe()
                 ?? throw new InvalidOperationException("크롬/엣지 실행 파일을 찾지 못했습니다.");
             _log?.Invoke($"[브라우저] 디버그 모드로 실행: {exe}");
+            _log?.Invoke($"[Browser] profile: {_profileDir}");
             var psi = new ProcessStartInfo
             {
                 FileName = exe,
@@ -84,6 +116,7 @@ public sealed class BrowserSession : IAsyncDisposable
                 },
             };
             _chrome = Process.Start(psi);
+            _freshLaunch = true;
             for (int i = 0; i < 60; i++)
             {
                 if (await CdpReadyAsync()) break;
@@ -94,13 +127,9 @@ public sealed class BrowserSession : IAsyncDisposable
         }
         else
         {
+            _freshLaunch = false;
             _log?.Invoke("[브라우저] 이미 실행 중인 디버그 크롬에 연결");
         }
-
-        _pw = await Playwright.CreateAsync();
-        _browser = await _pw.Chromium.ConnectOverCDPAsync(CdpUrl);
-        Context = _browser.Contexts.Count > 0 ? _browser.Contexts[0] : await _browser.NewContextAsync();
-        Page = Context.Pages.Count > 0 ? Context.Pages[0] : await Context.NewPageAsync();
     }
 
     private static readonly string[] ChallengeMarkers =
@@ -109,7 +138,141 @@ public sealed class BrowserSession : IAsyncDisposable
         "checking your browser", "cloudflare",
     };
 
-    /// <summary>현재 페이지가 Cloudflare 보안 확인 페이지인지 추정.</summary>
+    /// <summary>CDP HTTP(/json/list)로 대상 호스트 페이지의 현재 title 을 읽는다(Playwright 미사용).</summary>
+    private async Task<(bool found, string title)> TryGetTargetTitleAsync(string host)
+    {
+        try
+        {
+            using var r = await Http.GetAsync(CdpUrl + "/json/list");
+            if (!r.IsSuccessStatusCode) return (false, "");
+            using var doc = JsonDocument.Parse(await r.Content.ReadAsStringAsync());
+            foreach (var el in doc.RootElement.EnumerateArray())
+            {
+                if (!el.TryGetProperty("type", out var t) || t.GetString() != "page") continue;
+                string url = el.TryGetProperty("url", out var u) ? (u.GetString() ?? "") : "";
+                if (!url.Contains(host, StringComparison.OrdinalIgnoreCase)) continue;
+                string title = el.TryGetProperty("title", out var ti) ? (ti.GetString() ?? "") : "";
+                return (true, title);
+            }
+        }
+        catch { }
+        return (false, "");
+    }
+
+    /// <summary>
+    /// Cloudflare 가 사라질 때까지(사용자 수동 통과 포함) 대기. CDP HTTP 의 title 로만 판정하므로
+    /// 이 단계에서 Playwright/CDP Runtime 이 켜지지 않아 자동화로 탐지되지 않는다.
+    /// 이미 실행 중이던 크롬에 붙은 경우(_freshLaunch=false)는 여기서 판정하지 않고 ConnectAsync 에서 처리.
+    /// </summary>
+    public async Task<bool> WaitPastCloudflareAsync(int maxWaitMs = ChallengeWaitMs)
+    {
+        if (!_freshLaunch) return true;
+
+        string host;
+        try { host = new Uri(_startUrl).Host; }
+        catch { host = ""; }
+
+        int waited = 0;
+        bool notified = false;
+        await Task.Delay(1500);  // Cloudflare 인터스티셜이 렌더될 여유
+        while (waited < maxWaitMs)
+        {
+            var (found, title) = await TryGetTargetTitleAsync(host);
+            string low = title.ToLowerInvariant();
+            bool challenge = ChallengeMarkers.Any(m => low.Contains(m));
+            // 통과: 대상 페이지의 title 이 비어있지 않고 챌린지 문구가 아님
+            if (found && title.Length > 0 && !challenge) return true;
+            if (challenge && !notified)
+            {
+                _log?.Invoke("[수동 확인 필요] Cloudflare 보안 확인 — 크롬 창에서 체크박스를 눌러주세요.");
+                notified = true;
+            }
+            await Task.Delay(1000);
+            waited += 1000;
+        }
+        _log?.Invoke("[Cloudflare] Verification did not complete. Open ewgf.gg once in normal Chrome on this PC, then run again.");
+        return false;
+    }
+
+    /// <summary>Cloudflare 통과 후 Playwright 를 CDP 로 연결하고 대상 페이지를 잡는다.</summary>
+    public async Task ConnectAsync()
+    {
+        _log?.Invoke("[Playwright] 드라이버 시작…");
+        try
+        {
+            _pw = await Playwright.CreateAsync();
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[진단] 드라이버 시작 실패: {ex.GetType().Name}: {ex.Message}");
+            DiagnoseDriver();   // node.exe 를 직접 실행해 실제 원인(의존 DLL/차단) 파악
+            throw;
+        }
+        if (_chrome is { HasExited: true })
+            _log?.Invoke("[경고] 크롬 프로세스가 이미 종료됨 — 보안 프로그램 차단 또는 크롬 크래시 가능성");
+        else if (!await CdpReadyAsync())
+            _log?.Invoke("[경고] CDP 포트 응답 없음 — 크롬이 닫혔을 수 있음");
+        _log?.Invoke("[Playwright] CDP 연결…");
+        _browser = await _pw.Chromium.ConnectOverCDPAsync(CdpUrl);
+        Context = _browser.Contexts.Count > 0 ? _browser.Contexts[0] : await _browser.NewContextAsync();
+
+        string host;
+        try { host = new Uri(_startUrl).Host; }
+        catch { host = ""; }
+
+        Page = Context.Pages.FirstOrDefault(p => SameHost(p.Url, host))
+               ?? (Context.Pages.Count > 0 ? Context.Pages[0] : await Context.NewPageAsync());
+
+        // 이미 떠 있던 크롬에 붙었거나(대상 URL 이 아님) 대상 페이지가 아니면 이동 + (필요 시) 통과 대기.
+        if (!_freshLaunch || !SameHost(Page.Url, host))
+        {
+            await Page.GotoAsync(_startUrl,
+                new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 60_000 });
+            if (await LooksLikeChallengeAsync())
+                await WaitPastCloudflarePlaywrightAsync();
+        }
+    }
+
+    /// <summary>드라이버 node.exe 를 직접 실행해 즉시 종료의 실제 원인(의존 DLL 부재/보안 차단 등)을 로그로 남긴다.</summary>
+    private void DiagnoseDriver()
+    {
+        try
+        {
+            string node = Path.Combine(AppContext.BaseDirectory, ".playwright", "node", "win32_x64", "node.exe");
+            _log?.Invoke($"[진단] node 경로: {node}");
+            _log?.Invoke($"[진단] node 존재={File.Exists(node)}");
+            if (!File.Exists(node)) return;
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = node,
+                Arguments = "--version",
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using var p = Process.Start(psi)!;
+            string outp = p.StandardOutput.ReadToEnd();
+            string err = p.StandardError.ReadToEnd();
+            p.WaitForExit(5000);
+            _log?.Invoke($"[진단] node 종료코드={p.ExitCode} 버전='{outp.Trim()}' 에러='{err.Trim()}'");
+        }
+        catch (Exception dex)
+        {
+            // Win32Exception 이면 메시지에 '0xc000007b'(의존 DLL/비트수) 또는 '액세스가 거부'(보안 차단) 단서가 담긴다.
+            _log?.Invoke($"[진단] node 직접 실행 실패: {dex.GetType().Name}: {dex.Message}");
+        }
+    }
+
+    private static bool SameHost(string url, string host)
+    {
+        if (string.IsNullOrEmpty(host)) return false;
+        try { return new Uri(url).Host.Equals(host, StringComparison.OrdinalIgnoreCase); }
+        catch { return false; }
+    }
+
+    /// <summary>현재 페이지가 Cloudflare 보안 확인 페이지인지 추정(Playwright 연결 후 사용).</summary>
     public async Task<bool> LooksLikeChallengeAsync()
     {
         string title;
@@ -128,8 +291,8 @@ public sealed class BrowserSession : IAsyncDisposable
         return ChallengeMarkers.Any(m => body.Contains(m));
     }
 
-    /// <summary>Cloudflare 가 사라질 때까지(사용자 수동 통과 포함) 대기.</summary>
-    public async Task<bool> WaitPastCloudflareAsync(int maxWaitMs = ChallengeWaitMs)
+    /// <summary>Playwright 기반 통과 대기(이미 실행 중이던 크롬에 붙은 경우의 폴백).</summary>
+    private async Task<bool> WaitPastCloudflarePlaywrightAsync(int maxWaitMs = ChallengeWaitMs)
     {
         int waited = 0;
         bool notified = false;
@@ -147,6 +310,35 @@ public sealed class BrowserSession : IAsyncDisposable
         return !await LooksLikeChallengeAsync();
     }
 
+    /// <summary>
+    /// 페이지 HTML 을 안전하게 읽는다. 저사양 PC 에서는 Cloudflare 통과 직후 리다이렉트/렌더가
+    /// 늦게 끝나 ContentAsync 가 "page is navigating and changing the content" 예외를 던질 수 있으므로,
+    /// 네비게이션이 끝날 때까지 잠깐씩 기다리며 재시도한다.
+    /// </summary>
+    public async Task<string> GetStableContentAsync(int retries = 10)
+    {
+        for (int i = 0; i < retries; i++)
+        {
+            try
+            {
+                try
+                {
+                    await Page.WaitForLoadStateAsync(LoadState.DOMContentLoaded,
+                        new PageWaitForLoadStateOptions { Timeout = 10_000 });
+                }
+                catch (Exception) { }  // 로드 상태 대기 실패는 무시하고 읽기 시도
+                return await Page.ContentAsync();
+            }
+            catch (PlaywrightException ex) when (
+                ex.Message.Contains("navigating", StringComparison.OrdinalIgnoreCase) ||
+                ex.Message.Contains("changing the content", StringComparison.OrdinalIgnoreCase))
+            {
+                await Page.WaitForTimeoutAsync(1000);  // 네비게이션이 끝나길 기다린 뒤 재시도
+            }
+        }
+        return await Page.ContentAsync();  // 마지막 시도(여기서 나는 예외는 그대로 전파)
+    }
+
     /// <summary>경기 테이블이 렌더될 때까지 대기. 없으면 Cloudflare 로 보고 통과 대기.</summary>
     public async Task SettleRowsAsync()
     {
@@ -160,7 +352,7 @@ public sealed class BrowserSession : IAsyncDisposable
         {
             if (await LooksLikeChallengeAsync())
             {
-                await WaitPastCloudflareAsync();
+                await WaitPastCloudflarePlaywrightAsync();
                 try { await Page.WaitForSelectorAsync("table tr td", opt); }
                 catch (Exception) { }
             }
