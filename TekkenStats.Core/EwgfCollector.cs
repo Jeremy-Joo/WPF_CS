@@ -53,7 +53,8 @@ public static class EwgfCollector
                 return new Result(playerId, 0, null, "경기 없음(식별코드/기간 확인)");
 
             string safe = Sanitize(string.IsNullOrEmpty(name) ? playerId : name);
-            string outPath = Path.Combine(outRoot, safe, $"{safe}_{playerId}_ewgf{tag}.xlsx");
+            string stamp = DateTime.Now.ToString("yyyy_MMdd_HHmmss");   // 생성 시각: 연_월일_시분초
+            string outPath = Path.Combine(outRoot, safe, $"{safe}_{playerId}_ewgf{tag}_{stamp}.xlsx");
             string saved = EwgfReport.WriteWorkbook(recs, outPath);
             log($"[완료] {saved}");
             return new Result(playerId, recs.Count, saved, "");

@@ -67,7 +67,8 @@ public static class WavuCollector
             if (all.Count == 0) return new Result(playerId, 0, null, "경기 없음");
 
             string name = Sanitize(string.IsNullOrEmpty(playerName) ? playerId : playerName!);
-            string outPath = Path.Combine(outRoot, name, $"{name}_{urlId}_wavu.xlsx");
+            string stamp = DateTime.Now.ToString("yyyy_MMdd_HHmmss");   // 생성 시각: 연_월일_시분초
+            string outPath = Path.Combine(outRoot, name, $"{name}_{urlId}_wavu_{stamp}.xlsx");
             string saved = WavuReport.WriteWorkbook(all, outPath);
             log($"[완료] {saved}");
             return new Result(playerId, all.Count, saved, "");
