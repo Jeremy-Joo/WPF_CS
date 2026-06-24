@@ -17,9 +17,11 @@ public static class EwgfCollector
         try
         {
             await session.StartAsync(url);
-            await session.Page.GotoAsync(url,
-                new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 60_000 });
-            await session.WaitPastCloudflareAsync();
+            // Cloudflare 통과(순수 크롬 상태에서 CDP HTTP title 로 감지) → 통과 후에만 Playwright 연결.
+            if (!await session.WaitPastCloudflareAsync())
+                return new Result(playerId, 0, null,
+                    "Cloudflare verification did not complete. Open ewgf.gg once in normal Chrome on this PC, then run again.");
+            await session.ConnectAsync();
             try
             {
                 await session.Page.WaitForLoadStateAsync(LoadState.NetworkIdle,
@@ -28,7 +30,7 @@ public static class EwgfCollector
             catch (Exception) { }  // NetworkIdle 미도달은 무시하고 진행
             await session.Page.WaitForTimeoutAsync(1500);
 
-            string html = await session.Page.ContentAsync();
+            string html = await session.GetStableContentAsync();
             var battles = EwgfExtractor.ExtractBattles(html);
             log($"[추출] battle {battles.Count}건");
 
@@ -58,7 +60,7 @@ public static class EwgfCollector
         }
         catch (Exception ex)
         {
-            return new Result(playerId, 0, null, ex.Message);
+            return new Result(playerId, 0, null, BrowserSession.Friendly(ex));
         }
     }
 

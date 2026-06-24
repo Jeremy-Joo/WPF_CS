@@ -22,15 +22,18 @@ public static class WavuCollector
         try
         {
             await session.StartAsync(baseUrl);
-            await session.Page.GotoAsync(baseUrl,
-                new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 60_000 });
+            // Cloudflare 통과(순수 크롬 상태에서 CDP HTTP title 로 감지) → 통과 후에만 Playwright 연결.
+            if (!await session.WaitPastCloudflareAsync())
+                return new Result(playerId, 0, null,
+                    "Cloudflare verification did not complete. Open wank.wavu.wiki once in normal Chrome on this PC, then run again.");
+            await session.ConnectAsync();
             await session.SettleRowsAsync();
 
             var all = new List<MatchRecord>();
             var seen = new HashSet<string>();
             string? playerName = null;
 
-            string html = await session.Page.ContentAsync();
+            string html = await session.GetStableContentAsync();
             playerName ??= WavuParser.ExtractPlayerName(html);
             int kept = Accumulate(html, start, end, all, seen, out DateTime? oldest);
             log($"[OK] page=1  kept={kept}  total={all.Count}");
@@ -47,7 +50,7 @@ public static class WavuCollector
                 await session.SettleRowsAsync();
                 if (session.Page.Url == prev) { log("[끝] 페이지 이동 없음 → 중단"); break; }
 
-                html = await session.Page.ContentAsync();
+                html = await session.GetStableContentAsync();
                 int before = all.Count;
                 kept = Accumulate(html, start, end, all, seen, out oldest);
                 int added = all.Count - before;
@@ -71,7 +74,7 @@ public static class WavuCollector
         }
         catch (Exception ex)
         {
-            return new Result(playerId, 0, null, ex.Message);
+            return new Result(playerId, 0, null, BrowserSession.Friendly(ex));
         }
     }
 

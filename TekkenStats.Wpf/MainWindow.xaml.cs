@@ -10,6 +10,10 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        if (txtProfile.Text.Trim().Equals(LegacyProfileDir, StringComparison.OrdinalIgnoreCase))
+            txtProfile.Text = BrowserSession.DefaultProfileDir;
+        if (txtOutDir.Text.Trim().Equals(LegacyOutDir, StringComparison.OrdinalIgnoreCase))
+            txtOutDir.Text = DefaultOutDir();
         UpdateEnabled();
         LoadSettings();                       // 지난번 입력값 복원
         Closing += (_, _) => SaveSettings();  // 종료 시 저장
@@ -31,7 +35,17 @@ public partial class MainWindow : Window
         if (ids.Count == 0) { SetStatus("식별코드를 입력하세요"); return; }
 
         string outRoot = txtOutDir.Text.Trim();
+        if (string.IsNullOrWhiteSpace(outRoot))
+        {
+            outRoot = DefaultOutDir();
+            txtOutDir.Text = outRoot;
+        }
         string profile = txtProfile.Text.Trim();
+        if (string.IsNullOrWhiteSpace(profile))
+        {
+            profile = BrowserSession.DefaultProfileDir;
+            txtProfile.Text = profile;
+        }
 
         DateTime? start = null, end = null;
         if (chkAll.IsChecked != true)
@@ -90,7 +104,7 @@ public partial class MainWindow : Window
         foreach (var tok in (text ?? "").Split(new[] { '\n', '\r', ',', ' ', '\t' },
                      StringSplitOptions.RemoveEmptyEntries))
         {
-            var t = tok.Trim();
+            var t = tok.Trim().Replace("-", "");   // 식별코드의 하이픈 제거 (예: 3Jae-qRbd-E8aa → 3JaeqRbdE8aa)
             if (t.Length > 0 && seen.Add(t)) result.Add(t);
         }
         return result;
@@ -118,6 +132,32 @@ public partial class MainWindow : Window
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "TekkenRecordMaker", "settings.json");
 
+    private const string LegacyProfileDir = @"D:\TekkenResult\.browser_profile";
+    private const string LegacyOutDir = @"D:\TekkenResult\User";
+
+    /// <summary>
+    /// 결과 폴더 기본값. C 외 추가 드라이브(특히 D)가 있으면 그 드라이브에, C 단일 PC면 C 드라이브에 둔다.
+    /// </summary>
+    private static string DefaultOutDir() => Path.Combine(PickDataDrive(), "TekkenResult", "User");
+
+    /// <summary>저장용 드라이브 선택: D: 우선 → 그 외 비-C 고정 드라이브 → 없으면 C:.</summary>
+    private static string PickDataDrive()
+    {
+        try
+        {
+            var fixedDrives = DriveInfo.GetDrives()
+                .Where(d => d.DriveType == DriveType.Fixed && d.IsReady)
+                .Select(d => d.Name)   // 예: "C:\"
+                .ToList();
+            var d = fixedDrives.FirstOrDefault(n => n.StartsWith("D:", StringComparison.OrdinalIgnoreCase));
+            if (d != null) return d;
+            var nonC = fixedDrives.FirstOrDefault(n => !n.StartsWith("C:", StringComparison.OrdinalIgnoreCase));
+            if (nonC != null) return nonC;
+        }
+        catch { /* 드라이브 조회 실패 시 C 로 폴백 */ }
+        return @"C:\";
+    }
+
     private sealed class UiSettings
     {
         public string? Ids { get; set; }
@@ -135,6 +175,10 @@ public partial class MainWindow : Window
             if (!string.IsNullOrWhiteSpace(s.Ids)) txtIds.Text = s.Ids;
             if (!string.IsNullOrWhiteSpace(s.OutDir)) txtOutDir.Text = s.OutDir;
             if (!string.IsNullOrWhiteSpace(s.Profile)) txtProfile.Text = s.Profile;
+            if (txtProfile.Text.Trim().Equals(LegacyProfileDir, StringComparison.OrdinalIgnoreCase))
+                txtProfile.Text = BrowserSession.DefaultProfileDir;
+            if (txtOutDir.Text.Trim().Equals(LegacyOutDir, StringComparison.OrdinalIgnoreCase))
+                txtOutDir.Text = DefaultOutDir();
         }
         catch { /* 손상 시 기본값 사용 */ }
     }
