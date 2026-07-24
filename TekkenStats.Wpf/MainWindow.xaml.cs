@@ -7,6 +7,8 @@ namespace TekkenStats.Wpf;
 
 public partial class MainWindow : Window
 {
+    private CancellationTokenSource? _cts;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -57,23 +59,69 @@ public partial class MainWindow : Window
         void Log(string s) => Dispatcher.Invoke(() => AppendLog(s));
 
         SaveSettings();   // 실행 시점의 입력값 저장
+        _cts = new CancellationTokenSource();
+        var ct = _cts.Token;
         SetRunning(true);
         SetStatus("EWGF 수집 중…");
         AppendLog($"=== EWGF 수집 시작: {ids.Count}명 ===");
         AppendLog("(Cloudflare 창이 뜨면 체크박스를 직접 통과해 주세요)");
 
+        bool wantCompare = chkCompare.IsChecked == true;
+        bool canceled = false;
         try
         {
+            var collected = new List<CompareReport.Player>();
             foreach (var id in ids)
             {
+                if (ct.IsCancellationRequested) { canceled = true; break; }
+
                 AppendLog($"\n--- {id} ---");
-                var r = await Task.Run(() => EwgfCollector.CollectAsync(id, start, end, outRoot, profile, Log));
+                var r = await Task.Run(() => EwgfCollector.CollectAsync(id, start, end, outRoot, profile, Log, ct));
+                if (r.Error == EwgfCollector.CanceledError) { canceled = true; break; }
+
                 AppendLog(string.IsNullOrEmpty(r.Error)
                     ? $"[OK] {r.Count}경기 → {Path.GetFileName(r.OutPath)}"
                     : $"[실패] {r.Error}");
+                if (wantCompare && string.IsNullOrEmpty(r.Error) && r.Records is { Count: > 0 })
+                    collected.Add(new CompareReport.Player(r.PlayerId, r.PlayerName, r.Records));
             }
-            SetStatus("완료");
-            AppendLog("\n=== 전체 완료 ===");
+
+            if (canceled)
+            {
+                AppendLog("\n=== 중지됨 ===");
+                SetStatus("중지됨");
+            }
+            else
+            {
+                if (wantCompare)
+                {
+                    if (collected.Count >= 2)
+                    {
+                        AppendLog($"\n--- 비교 리포트 ({collected.Count}명) ---");
+                        try
+                        {
+                            string cmp = await Task.Run(() => CompareReport.WriteWorkbook(collected, outRoot));
+                            AppendLog($"[OK] 비교 리포트 → {Path.GetFileName(cmp)}");
+                        }
+                        catch (Exception ex)
+                        {
+                            AppendLog($"[비교 리포트 실패] {ex.Message}");
+                        }
+                    }
+                    else if (ids.Count >= 2)
+                    {
+                        AppendLog("\n(비교하려면 2명 이상 정상 수집되어야 합니다 — 실패한 식별코드를 확인하세요)");
+                    }
+                }
+
+                SetStatus("완료");
+                AppendLog("\n=== 전체 완료 ===");
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            AppendLog("\n=== 중지됨 ===");
+            SetStatus("중지됨");
         }
         catch (Exception ex)
         {
@@ -83,10 +131,19 @@ public partial class MainWindow : Window
         finally
         {
             SetRunning(false);
+            _cts?.Dispose();
+            _cts = null;
         }
     }
 
-    private void OnCancel(object sender, RoutedEventArgs e) => SetStatus("중지는 크롬 창을 닫아주세요");
+    private void OnCancel(object sender, RoutedEventArgs e)
+    {
+        if (_cts == null || _cts.IsCancellationRequested) return;
+        SetStatus("중지 요청…");
+        AppendLog("\n[중지 요청] 현재 진행 중인 작업을 정리하고 있습니다…");
+        _cts.Cancel();
+        btnCancel.IsEnabled = false;   // 중복 클릭 방지 (SetRunning(false) 에서 최종 정리)
+    }
 
     private void OnOpenFolder(object sender, RoutedEventArgs e)
     {
@@ -116,6 +173,7 @@ public partial class MainWindow : Window
         btnCancel.IsEnabled = running;
         prog.IsIndeterminate = running;
         txtIds.IsEnabled = !running;
+        chkCompare.IsEnabled = !running;
         grpDate.IsEnabled = !running;
     }
 
@@ -163,6 +221,7 @@ public partial class MainWindow : Window
         public string? Ids { get; set; }
         public string? OutDir { get; set; }
         public string? Profile { get; set; }
+        public bool? Compare { get; set; }
     }
 
     private void LoadSettings()
@@ -175,6 +234,7 @@ public partial class MainWindow : Window
             if (!string.IsNullOrWhiteSpace(s.Ids)) txtIds.Text = s.Ids;
             if (!string.IsNullOrWhiteSpace(s.OutDir)) txtOutDir.Text = s.OutDir;
             if (!string.IsNullOrWhiteSpace(s.Profile)) txtProfile.Text = s.Profile;
+            if (s.Compare.HasValue) chkCompare.IsChecked = s.Compare.Value;
             if (txtProfile.Text.Trim().Equals(LegacyProfileDir, StringComparison.OrdinalIgnoreCase))
                 txtProfile.Text = BrowserSession.DefaultProfileDir;
             if (txtOutDir.Text.Trim().Equals(LegacyOutDir, StringComparison.OrdinalIgnoreCase))
@@ -188,7 +248,11 @@ public partial class MainWindow : Window
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);
-            var s = new UiSettings { Ids = txtIds.Text, OutDir = txtOutDir.Text, Profile = txtProfile.Text };
+            var s = new UiSettings
+            {
+                Ids = txtIds.Text, OutDir = txtOutDir.Text, Profile = txtProfile.Text,
+                Compare = chkCompare.IsChecked == true,
+            };
             File.WriteAllText(SettingsPath,
                 System.Text.Json.JsonSerializer.Serialize(s, new System.Text.Json.JsonSerializerOptions { WriteIndented = true }));
         }

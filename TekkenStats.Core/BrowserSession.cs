@@ -87,7 +87,7 @@ public sealed class BrowserSession : IAsyncDisposable
     /// 크롬을 디버그 모드로 띄운다. 이 단계에서는 Playwright 를 붙이지 않는다(순수 크롬 상태에서
     /// Cloudflare 를 통과시키기 위함). 연결은 통과 후 <see cref="ConnectAsync"/> 에서 한다.
     /// </summary>
-    public async Task StartAsync(string startUrl)
+    public async Task StartAsync(string startUrl, CancellationToken ct = default)
     {
         _startUrl = startUrl;
         Directory.CreateDirectory(_profileDir);
@@ -120,7 +120,7 @@ public sealed class BrowserSession : IAsyncDisposable
             for (int i = 0; i < 60; i++)
             {
                 if (await CdpReadyAsync()) break;
-                await Task.Delay(500);
+                await Task.Delay(500, ct);
             }
             if (!await CdpReadyAsync())
                 throw new InvalidOperationException("크롬 디버그 포트 연결 실패 (CDP 미응답)");
@@ -163,8 +163,9 @@ public sealed class BrowserSession : IAsyncDisposable
     /// Cloudflare 가 사라질 때까지(사용자 수동 통과 포함) 대기. CDP HTTP 의 title 로만 판정하므로
     /// 이 단계에서 Playwright/CDP Runtime 이 켜지지 않아 자동화로 탐지되지 않는다.
     /// 이미 실행 중이던 크롬에 붙은 경우(_freshLaunch=false)는 여기서 판정하지 않고 ConnectAsync 에서 처리.
+    /// 사용자가 대상 탭을 강제로 닫아도(크롬 프로세스는 살아있음) 몇 초 후 새 탭을 자동으로 다시 연다.
     /// </summary>
-    public async Task<bool> WaitPastCloudflareAsync(int maxWaitMs = ChallengeWaitMs)
+    public async Task<bool> WaitPastCloudflareAsync(int maxWaitMs = ChallengeWaitMs, CancellationToken ct = default)
     {
         if (!_freshLaunch) return true;
 
@@ -174,29 +175,67 @@ public sealed class BrowserSession : IAsyncDisposable
 
         int waited = 0;
         bool notified = false;
-        await Task.Delay(1500);  // Cloudflare 인터스티셜이 렌더될 여유
+        int notFoundStreak = 0;
+        bool triedReopen = false;
+        await Task.Delay(1500, ct);  // Cloudflare 인터스티셜이 렌더될 여유
         while (waited < maxWaitMs)
         {
+            if (!await CdpReadyAsync())
+                throw new InvalidOperationException("크롬 창이 닫혀 연결이 끊겼습니다. 다시 시도해 주세요.");
+
             var (found, title) = await TryGetTargetTitleAsync(host);
             string low = title.ToLowerInvariant();
             bool challenge = ChallengeMarkers.Any(m => low.Contains(m));
             // 통과: 대상 페이지의 title 이 비어있지 않고 챌린지 문구가 아님
             if (found && title.Length > 0 && !challenge) return true;
+
+            if (!found)
+            {
+                notFoundStreak++;
+                // 사용자가 탭을 강제로 닫은 경우: 계속 기다리지 않고 새 탭을 직접 열어본다.
+                if (!triedReopen && notFoundStreak >= 4)
+                {
+                    triedReopen = true;
+                    _log?.Invoke("[브라우저] 대상 탭을 찾지 못해 새로 엽니다…");
+                    await TryReopenTabAsync(_startUrl);
+                }
+            }
+            else
+            {
+                notFoundStreak = 0;
+            }
+
             if (challenge && !notified)
             {
                 _log?.Invoke("[수동 확인 필요] Cloudflare 보안 확인 — 크롬 창에서 체크박스를 눌러주세요.");
                 notified = true;
             }
-            await Task.Delay(1000);
+            await Task.Delay(1000, ct);
             waited += 1000;
         }
         _log?.Invoke("[Cloudflare] Verification did not complete. Open ewgf.gg once in normal Chrome on this PC, then run again.");
         return false;
     }
 
-    /// <summary>Cloudflare 통과 후 Playwright 를 CDP 로 연결하고 대상 페이지를 잡는다.</summary>
-    public async Task ConnectAsync()
+    /// <summary>CDP HTTP(/json/new)로 새 탭을 연다. 사용자가 탭을 강제로 닫았을 때의 복구용.</summary>
+    private async Task TryReopenTabAsync(string url)
     {
+        try
+        {
+            using var r = await Http.PutAsync(CdpUrl + "/json/new?" + Uri.EscapeDataString(url), null);
+            if (!r.IsSuccessStatusCode)
+                _log?.Invoke($"[브라우저] 새 탭 열기 실패: HTTP {(int)r.StatusCode}");
+        }
+        catch (Exception ex)
+        {
+            _log?.Invoke($"[브라우저] 새 탭 열기 실패: {ex.Message}");
+        }
+    }
+
+    /// <summary>Cloudflare 통과 후 Playwright 를 CDP 로 연결하고 대상 페이지를 잡는다.</summary>
+    public async Task ConnectAsync(CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
         _log?.Invoke("[Playwright] 드라이버 시작…");
         try
         {
@@ -229,7 +268,7 @@ public sealed class BrowserSession : IAsyncDisposable
             await Page.GotoAsync(_startUrl,
                 new PageGotoOptions { WaitUntil = WaitUntilState.DOMContentLoaded, Timeout = 60_000 });
             if (await LooksLikeChallengeAsync())
-                await WaitPastCloudflarePlaywrightAsync();
+                await WaitPastCloudflarePlaywrightAsync(ct: ct);
         }
     }
 
@@ -292,7 +331,7 @@ public sealed class BrowserSession : IAsyncDisposable
     }
 
     /// <summary>Playwright 기반 통과 대기(이미 실행 중이던 크롬에 붙은 경우의 폴백).</summary>
-    private async Task<bool> WaitPastCloudflarePlaywrightAsync(int maxWaitMs = ChallengeWaitMs)
+    private async Task<bool> WaitPastCloudflarePlaywrightAsync(int maxWaitMs = ChallengeWaitMs, CancellationToken ct = default)
     {
         int waited = 0;
         bool notified = false;
@@ -304,7 +343,7 @@ public sealed class BrowserSession : IAsyncDisposable
                 _log?.Invoke("[수동 확인 필요] Cloudflare 보안 확인 — 크롬 창에서 체크박스를 눌러주세요.");
                 notified = true;
             }
-            await Page.WaitForTimeoutAsync(1000);
+            await Task.Delay(1000, ct);
             waited += 1000;
         }
         return !await LooksLikeChallengeAsync();
@@ -315,10 +354,11 @@ public sealed class BrowserSession : IAsyncDisposable
     /// 늦게 끝나 ContentAsync 가 "page is navigating and changing the content" 예외를 던질 수 있으므로,
     /// 네비게이션이 끝날 때까지 잠깐씩 기다리며 재시도한다.
     /// </summary>
-    public async Task<string> GetStableContentAsync(int retries = 10)
+    public async Task<string> GetStableContentAsync(int retries = 10, CancellationToken ct = default)
     {
         for (int i = 0; i < retries; i++)
         {
+            ct.ThrowIfCancellationRequested();
             try
             {
                 try
@@ -333,14 +373,14 @@ public sealed class BrowserSession : IAsyncDisposable
                 ex.Message.Contains("navigating", StringComparison.OrdinalIgnoreCase) ||
                 ex.Message.Contains("changing the content", StringComparison.OrdinalIgnoreCase))
             {
-                await Page.WaitForTimeoutAsync(1000);  // 네비게이션이 끝나길 기다린 뒤 재시도
+                await Task.Delay(1000, ct);  // 네비게이션이 끝나길 기다린 뒤 재시도
             }
         }
         return await Page.ContentAsync();  // 마지막 시도(여기서 나는 예외는 그대로 전파)
     }
 
     /// <summary>경기 테이블이 렌더될 때까지 대기. 없으면 Cloudflare 로 보고 통과 대기.</summary>
-    public async Task SettleRowsAsync()
+    public async Task SettleRowsAsync(CancellationToken ct = default)
     {
         // DOM 에 테이블 셀이 붙을 때까지 대기(SSR 페이지는 즉시). 'visible' 이 아닌 'attached'.
         var opt = new PageWaitForSelectorOptions { Timeout = RowsWaitMs, State = WaitForSelectorState.Attached };
@@ -352,11 +392,12 @@ public sealed class BrowserSession : IAsyncDisposable
         {
             if (await LooksLikeChallengeAsync())
             {
-                await WaitPastCloudflarePlaywrightAsync();
+                await WaitPastCloudflarePlaywrightAsync(ct: ct);
                 try { await Page.WaitForSelectorAsync("table tr td", opt); }
                 catch (Exception) { }
             }
         }
+        ct.ThrowIfCancellationRequested();
         await Page.WaitForTimeoutAsync(300);
     }
 

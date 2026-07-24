@@ -33,6 +33,7 @@ public sealed class MatchRecord
 {
     public DateTime Dt { get; set; }            // KST
     public string Player { get; set; } = "";
+    public string MyPolaris { get; set; } = "";  // 내 식별코드 (비교 리포트의 맞대결 매칭용)
     public string MyChar { get; set; } = "";
     public int MyRating { get; set; }           // 레이팅 자리 = TekkenPower
     public int MyDelta { get; set; }            // 캐릭터별 시간순 파워 변화

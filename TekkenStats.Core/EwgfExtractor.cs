@@ -103,6 +103,7 @@ public static class EwgfExtractor
             {
                 Dt = dt.Value,
                 Player = (meIs1 ? b.P1Name : b.P2Name) ?? "",
+                MyPolaris = mePid,
                 MyChar = (meIs1 ? b.P1Char : b.P2Char) ?? "",
                 MyRating = (meIs1 ? b.P1TekkenPower : b.P2TekkenPower) ?? 0,
                 MyDelta = 0,

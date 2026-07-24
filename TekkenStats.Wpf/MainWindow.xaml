@@ -31,10 +31,14 @@
 
         <!-- 1. 식별코드 -->
         <GroupBox Grid.Row="1" Header="식별코드 (한 줄에 하나, 또는 콤마로 구분)" Padding="8" Margin="0,0,0,8">
-            <TextBox x:Name="txtIds" Height="70" AcceptsReturn="True"
-                     VerticalScrollBarVisibility="Auto"
-                     TextWrapping="Wrap" FontFamily="Consolas"
-                     Text="53deQ2dmLday"/>
+            <StackPanel>
+                <TextBox x:Name="txtIds" Height="70" AcceptsReturn="True"
+                         VerticalScrollBarVisibility="Auto"
+                         TextWrapping="Wrap" FontFamily="Consolas"
+                         Text="53deQ2dmLday"/>
+                <CheckBox x:Name="chkCompare" Content="2명 이상이면 비교 리포트도 생성"
+                          IsChecked="False" Margin="0,8,0,0"/>
+            </StackPanel>
         </GroupBox>
 
         <!-- 2. 기간 -->

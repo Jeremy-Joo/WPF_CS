@@ -48,6 +48,36 @@ if (args.Length > 0 && args[0] == "wavu")
     return;
 }
 
+// 비교 리포트 검증 모드: dotnet run -- compare
+// 같은 기류사단(4JGy2FayQFMT) 덤프에서 JackFather(53deQ2dmLday) 관점도 뽑아
+// 실제 head2head 데이터(둘이 직접 붙은 경기)로 CompareReport 를 검증한다.
+if (args.Length > 0 && args[0] == "compare")
+{
+    string cp = @"D:\Git_jerry\tk8_data_Wavuwank\User\_ewgf_probe\ewgf_4JGy2FayQFMT.html";
+    string ch = File.ReadAllText(cp);
+    var cb = EwgfExtractor.ExtractBattles(ch);
+
+    var (recsA, nameA) = EwgfExtractor.Normalize(cb, "4JGy2FayQFMT");
+    var (recsB, nameB) = EwgfExtractor.Normalize(cb, "53deQ2dmLday");
+    Console.WriteLine($"A={nameA} ({recsA.Count}건)  B={nameB} ({recsB.Count}건, 이 덤프엔 A와 붙은 경기만 존재)");
+
+    var players = new List<CompareReport.Player>
+    {
+        new("4JGy2FayQFMT", nameA, recsA),
+        new("53deQ2dmLday", nameB, recsB),
+    };
+    string cmpOutPath = Path.Combine(Path.GetTempPath(), "compare_test");
+    string cmpSaved = CompareReport.WriteWorkbook(players, cmpOutPath);
+    Console.WriteLine($"[엑셀 저장] {cmpSaved}");
+
+    // head2head 직접 검증 (A 시점에서 B 와 붙은 경기 수)
+    int direct = recsA.Count(r => r.OppPolaris == "53deQ2dmLday");
+    int aWins = recsA.Count(r => r.OppPolaris == "53deQ2dmLday" && r.Result == "W");
+    Console.WriteLine($"[체크] A 시점 A vs B 직접 대결: {direct}건 (A {aWins}승 {direct - aWins}패)");
+    Console.WriteLine($"[체크] B 레코드 수(={direct} 이어야 함, B 관점도 같은 경기라서): {recsB.Count}");
+    return;
+}
+
 // 슬라이스 2 검증: 이미 받아둔 덤프 HTML 로 추출/정규화 (브라우저 불필요)
 string htmlPath = args.Length > 0
     ? args[0]
