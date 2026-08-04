@@ -24,9 +24,18 @@
             <!-- 7 footer -->
         </Grid.RowDefinitions>
 
-        <!-- 0. 데이터 소스 (EWGF 전용) -->
+        <!-- 0. 데이터 소스 -->
         <GroupBox Grid.Row="0" Header="데이터 소스" Padding="8" Margin="0,0,0,8">
-            <TextBlock Text="EWGF (퀵·랭크·방·그룹, 날짜 필터 가능)" VerticalAlignment="Center"/>
+            <StackPanel>
+                <RadioButton x:Name="rbEwgf" GroupName="src" IsChecked="True"
+                             Checked="OnSourceChanged"
+                             Content="EWGF — 퀵·랭크·방·그룹 전부. 브라우저로 Cloudflare 통과 필요"/>
+                <RadioButton x:Name="rbWavu" GroupName="src" Margin="0,5,0,0"
+                             Checked="OnSourceChanged"
+                             Content="wavu wank — 랭크전만. 공식 JSON API (브라우저 불필요, 빠름)"/>
+                <TextBlock x:Name="txtSrcNote" Foreground="Gray" Margin="0,6,0,0" TextWrapping="Wrap"
+                           Text="EWGF: 화면에 보이는 최근 전적만 받습니다. Cloudflare 창이 뜨면 직접 통과해 주세요."/>
+            </StackPanel>
         </GroupBox>
 
         <!-- 1. 식별코드 -->
@@ -36,8 +45,27 @@
                          VerticalScrollBarVisibility="Auto"
                          TextWrapping="Wrap" FontFamily="Consolas"
                          Text="53deQ2dmLday"/>
-                <CheckBox x:Name="chkCompare" Content="2명 이상이면 비교 리포트도 생성"
+                <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                    <Button x:Name="btnImport" Content="목록 불러오기…" Width="118" Height="26"
+                            Click="OnImportIds"
+                            ToolTip="관리자 통계 JSON · CSV · 텍스트에서 식별코드를 뽑아 채웁니다"/>
+                    <TextBlock Text="상위" VerticalAlignment="Center" Margin="10,0,4,0"/>
+                    <TextBox x:Name="txtTopN" Width="42" Height="24" Text="20"
+                             VerticalContentAlignment="Center" TextAlignment="Center"
+                             ToolTip="조회수 상위 N명만 불러옵니다. 0 이면 전체"/>
+                    <TextBlock Text="명 (0=전체)" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                    <Button x:Name="btnUsage" Content="이용통계 엑셀" Width="104" Height="26" Margin="12,0,0,0"
+                            IsEnabled="False" Click="OnUsageReport"
+                            ToolTip="불러온 관리자 JSON 으로 사이트 이용 통계를 만듭니다 (전적 수집 없음)"/>
+                    <Button x:Name="btnPopReport" Content="인구 리포트 만들기" Width="126" Height="26" Margin="6,0,0,0"
+                            IsEnabled="False" Click="OnPopulationFromList"
+                            ToolTip="불러온 식별코드 전부의 전적을 받아 승률·경기수 분포 엑셀 하나를 만듭니다 (개별 파일 없음)"/>
+                </StackPanel>
+                <TextBlock x:Name="txtImportNote" Foreground="Gray" Margin="0,6,0,0" TextWrapping="Wrap"/>
+                <CheckBox x:Name="chkCompare" Content="2명 이상이면 비교 리포트도 생성 (맞대결 포함)"
                           IsChecked="False" Margin="0,8,0,0"/>
+                <CheckBox x:Name="chkPopulation" Content="2명 이상이면 인구 리포트도 생성 (전부 합쳐 집단 분석)"
+                          IsChecked="False" Margin="0,5,0,0"/>
             </StackPanel>
         </GroupBox>
 
@@ -67,13 +95,50 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <TextBlock Grid.Row="0" Grid.Column="0" Text="결과 폴더:" VerticalAlignment="Center" Margin="0,0,8,4"/>
                 <TextBox x:Name="txtOutDir" Grid.Row="0" Grid.Column="1" Margin="0,0,0,4"
                          Text="D:\TekkenResult\User"/>
-                <TextBlock Grid.Row="1" Grid.Column="0" Text="브라우저 프로필:" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                <TextBox x:Name="txtProfile" Grid.Row="1" Grid.Column="1"
+                <TextBlock x:Name="lblProfile" Grid.Row="1" Grid.Column="0" Text="브라우저 프로필:"
+                           VerticalAlignment="Center" Margin="0,0,8,4"/>
+                <TextBox x:Name="txtProfile" Grid.Row="1" Grid.Column="1" Margin="0,0,0,4"
                          Text="D:\TekkenResult\.browser_profile"/>
+                <TextBlock Grid.Row="2" Grid.Column="0" Text="캐시:" VerticalAlignment="Center" Margin="0,0,8,4"/>
+                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,4">
+                    <CheckBox x:Name="chkCache" Content="wavu 캐시 사용 (유효기간)" IsChecked="True"
+                              VerticalAlignment="Center" Checked="OnCacheChanged" Unchecked="OnCacheChanged"/>
+                    <TextBox x:Name="txtCacheTtl" Width="46" Height="24" Text="24" Margin="8,0,4,0"
+                             VerticalContentAlignment="Center" TextAlignment="Center"
+                             ToolTip="이 시간 안에 다시 조회하면 저장본을 씁니다"/>
+                    <TextBlock Text="시간" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="txtCacheNote" Foreground="Gray" Margin="12,0,0,0" VerticalAlignment="Center"
+                               Text="같은 식별코드 재수집 시 wavu 를 다시 안 때립니다"/>
+                </StackPanel>
+                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Margin="0,0,0,4">
+                    <Button x:Name="btnClearCache" Content="비우기" Width="70" Height="24"
+                            Click="OnClearCache"
+                            ToolTip="결과폴더\.cache 의 저장본을 모두 지웁니다 (다음 수집은 wavu 에서 새로 받음)"/>
+                    <Button x:Name="btnExportCache" Content="내보내기(zip)" Width="96" Height="24" Margin="6,0,0,0"
+                            Click="OnExportCache"
+                            ToolTip="현재 캐시를 zip 하나로 저장합니다 (다른 PC 로 옮길 때)"/>
+                    <Button x:Name="btnImportCache" Content="불러오기(zip)" Width="96" Height="24" Margin="6,0,0,0"
+                            Click="OnImportCache"
+                            ToolTip="zip 캐시를 현재 결과폴더\.cache 에 합칩니다 (최신 저장본 우선)"/>
+                    <TextBlock x:Name="txtCacheArchiveNote" Foreground="Gray" Margin="12,0,0,0" VerticalAlignment="Center"
+                               Text="캐시를 파일 하나로 주고받습니다"/>
+                </StackPanel>
+                <TextBlock Grid.Row="4" Grid.Column="0" Text="요청 간격:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal">
+                    <TextBox x:Name="txtDelayMs" Width="56" Height="24" Text="300"
+                             VerticalContentAlignment="Center" TextAlignment="Center"
+                             ToolTip="여러 명 수집 시 wavu 요청 사이 간격(ms). 병렬은 안 씁니다 — 한 번에 하나씩입니다"/>
+                    <TextBlock Text="ms" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                    <TextBlock Foreground="Gray" Margin="12,0,0,0" VerticalAlignment="Center"
+                               Text="한 번에 하나씩(순차) 보냅니다. 낮출수록 빠르지만 wavu 차단 위험이 커집니다."/>
+                </StackPanel>
             </Grid>
         </GroupBox>
 
@@ -83,6 +148,9 @@
                     FontWeight="Bold" Click="OnRun"/>
             <Button x:Name="btnCancel" Content="중지" Width="80" Height="34" Margin="8,0,0,0"
                     IsEnabled="False" Click="OnCancel"/>
+            <Button x:Name="btnReveal" Content="파일 위치 열기" Width="120" Height="34" Margin="8,0,0,0"
+                    IsEnabled="False" Click="OnRevealFile"
+                    ToolTip="마지막으로 저장된 결과 파일을 탐색기에서 선택해 보여줍니다"/>
             <Button x:Name="btnOpen" Content="결과 폴더 열기" Width="120" Height="34" Margin="8,0,0,0"
                     Click="OnOpenFolder"/>
             <TextBlock x:Name="txtStatus" VerticalAlignment="Center" Margin="14,0,0,0"

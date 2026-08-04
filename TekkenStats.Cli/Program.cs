@@ -3,6 +3,123 @@ using TekkenStats.Core;
 
 Console.OutputEncoding = Encoding.UTF8;
 
+// 캐시 조회/비우기: dotnet run -- cache stats|clear <결과폴더>
+if (args.Length > 0 && args[0] == "cache")
+{
+    string sub = args.Length > 1 ? args[1] : "stats";
+    string root = args.Length > 2 ? args[2] : Path.Combine(Path.GetTempPath(), "tekken_population");
+    string dir = ReplayCache.DefaultDir(root);
+
+    var (files, bytes) = ReplayCache.Stats(dir);
+    Console.WriteLine($"[캐시] {dir}");
+    Console.WriteLine($"       {files}개 파일, {bytes / 1024.0 / 1024.0:0.0}MB");
+    if (sub == "clear")
+    {
+        var (cleared, freed) = ReplayCache.Clear(dir);
+        Console.WriteLine($"[비움] {cleared}개 삭제, {freed / 1024.0 / 1024.0:0.0}MB 확보");
+    }
+    else if (sub == "export")
+    {
+        string zip = args.Length > 3 ? args[3] : Path.Combine(root, "tekken_cache.zip");
+        var (n, zbytes) = CacheArchive.Export(dir, zip);
+        Console.WriteLine($"[내보냄] {n}개 → {zip} ({zbytes / 1024.0 / 1024.0:0.0}MB)");
+    }
+    else if (sub == "import")
+    {
+        if (args.Length < 4) { Console.WriteLine("사용법: cache import <결과폴더> <zip경로>"); return; }
+        var (imported, skipped) = CacheArchive.Import(args[3], dir);
+        Console.WriteLine($"[불러옴] {imported}개 추가, {skipped}개 건너뜀(이미 최신)");
+    }
+    return;
+}
+
+// 이용 통계 엑셀: dotnet run -- usage <관리자JSON> [출력폴더]   (수집 없음)
+if (args.Length > 0 && args[0] == "usage")
+{
+    if (args.Length < 2) { Console.WriteLine("사용법: usage <관리자JSON> [출력폴더]"); return; }
+    var imported = IdImport.FromFile(args[1]);
+    if (imported.Log == null) { Console.WriteLine($"[실패] 관리자 JSON 형식이 아닙니다 ({imported.Kind})"); return; }
+
+    var (f, l) = imported.Log.DateRange();
+    Console.WriteLine($"요청 {imported.Log.Days}일 / 실제 데이터 {f} ~ {l} ({imported.Log.Daily.Count}일)");
+    Console.WriteLine($"총 조회 {imported.Log.TotalViews}, 플레이어 {imported.Log.Players.Count}명");
+    string uOut = args.Length > 2 ? args[2] : Path.Combine(Path.GetTempPath(), "tekken_usage");
+    Console.WriteLine($"[엑셀 저장] {UsageReport.WriteWorkbook(imported.Log, uOut)}");
+    return;
+}
+
+// 인구 리포트: dotnet run -- population <관리자JSON|텍스트> [상위N] [출력폴더]
+if (args.Length > 0 && args[0] == "population")
+{
+    if (args.Length < 2) { Console.WriteLine("사용법: population <파일> [상위N] [출력폴더]"); return; }
+    var imported = IdImport.FromFile(args[1]);
+    int topN = args.Length > 2 && int.TryParse(args[2], out var n) ? n : 20;
+    string pOut = args.Length > 3 ? args[3] : Path.Combine(Path.GetTempPath(), "tekken_population");
+
+    var targets = imported.Items.Take(topN).ToList();
+    Console.WriteLine($"[{imported.Kind}] 식별코드 {imported.Items.Count}개 중 상위 {targets.Count}명 수집");
+
+    // 캐시 검증용 — 결과폴더 아래 .cache 에 24시간 유효기간으로 저장/재사용.
+    string popCache = ReplayCache.DefaultDir(pOut);
+
+    var entries = new List<PopulationReport.Entry>();
+    for (int i = 0; i < targets.Count; i++)
+    {
+        var it = targets[i];
+        // wavu 레이트리밋 회피 — 순차 수집. 병렬로 바꾸지 말 것.
+        if (i > 0) await Task.Delay(1000);
+        try
+        {
+            var replays = await WavuApiCollector.FetchWithCacheAsync(
+                it.Id, popCache, TimeSpan.FromHours(24), Console.WriteLine);
+            var (prs, nm, _) = WavuApiCollector.Normalize(replays, Collect.NormalizeId(it.Id));
+            Console.WriteLine($"  [{i + 1}/{targets.Count}] {it.Id} {nm} — {prs.Count}경기");
+            if (prs.Count > 0)
+                entries.Add(new PopulationReport.Entry(it.Id,
+                    string.IsNullOrEmpty(nm) ? it.Name : nm, it.Views, prs));
+        }
+        catch (WavuApiException ex)
+        {
+            Console.WriteLine($"  [{i + 1}/{targets.Count}] {it.Id} — 실패: {ex.Message}");
+        }
+    }
+
+    if (entries.Count == 0) { Console.WriteLine("[실패] 수집된 전적이 없습니다."); return; }
+    Console.WriteLine($"[엑셀 저장] {PopulationReport.WriteWorkbook(entries, pOut)}");
+    return;
+}
+
+// wavu JSON API 실수집: dotnet run -- wavuapi <식별코드> [출력폴더]
+// 브라우저가 필요 없으므로 이 경로는 CLI 에서 그대로 검증된다.
+if (args.Length > 0 && args[0] == "wavuapi")
+{
+    string pid = args.Length > 1 ? args[1] : "53deQ2dmLday";
+    string outRoot = args.Length > 2 ? args[2] : Path.Combine(Path.GetTempPath(), "wavuapi");
+
+    var res = await WavuApiCollector.CollectAsync(pid, null, null, outRoot, Console.WriteLine);
+    if (!string.IsNullOrEmpty(res.Error)) { Console.WriteLine($"[실패] {res.Error}"); return; }
+
+    var wrecs = res.Records!;
+    Console.WriteLine($"\n{res.PlayerName} — {res.Count}경기  → {res.OutPath}");
+    Console.WriteLine($"기간: {wrecs.Min(r => r.Dt):yyyy-MM-dd} ~ {wrecs.Max(r => r.Dt):yyyy-MM-dd}");
+    Console.WriteLine($"캐릭터: {string.Join(", ", wrecs.Select(r => r.MyChar).Distinct().OrderBy(c => c))}");
+    Console.WriteLine("시즌별:");
+    foreach (var g in wrecs.GroupBy(r => r.Season).OrderByDescending(g => g.Key))
+        Console.WriteLine($"  {g.Key}: {g.Count()}");
+
+    // 매핑 안 된 캐릭터가 있으면 조용히 넘어가지 않고 드러낸다(신캐 추가 감지).
+    var unknown = wrecs.SelectMany(r => new[] { r.MyChar, r.OppChar })
+        .Where(c => c.StartsWith('#')).Distinct().ToList();
+    Console.WriteLine(unknown.Count == 0
+        ? "[체크] 미매핑 캐릭터 없음"
+        : $"[경고] 미매핑 chara_id: {string.Join(", ", unknown)} → WavuChars.cs 에 추가 필요");
+
+    var last = wrecs.OrderByDescending(r => r.Dt).First();
+    Console.WriteLine($"최신: {last.Dt:yyyy-MM-dd HH:mm} {last.MyChar} {last.MyRating}({last.MyDelta:+#;-#;0}) " +
+                      $"{last.Score} {last.Result} vs {last.OppChar}/{last.OppName}[{last.OppPolaris}]");
+    return;
+}
+
 // wavu 파서 검증 모드: dotnet run -- wavu <html>
 if (args.Length > 0 && args[0] == "wavu")
 {
