@@ -32,6 +32,7 @@ public sealed class Battle
 public sealed class MatchRecord
 {
     public DateTime Dt { get; set; }            // KST
+    public string BattleId { get; set; } = "";  // wavu battle_id (중복 제거 키). ewgf 는 안 준다 → 빈 값
     public string Player { get; set; } = "";
     public string MyPolaris { get; set; } = "";  // 내 식별코드 (비교 리포트의 맞대결 매칭용)
     public string MyChar { get; set; } = "";
@@ -42,13 +43,17 @@ public sealed class MatchRecord
     public int OppRounds { get; set; }
     public string Result { get; set; } = "";    // "W" / "L"
     public int OppRating { get; set; }
+    public int OppDelta { get; set; }           // 상대 레이팅 변동. wavu JSON 만 준다(ewgf 는 0)
     public string OppChar { get; set; } = "";
     public string OppName { get; set; } = "";
     public string OppPolaris { get; set; } = "";
     public string BattleType { get; set; } = "";  // Quick/Ranked/Player/Group
     public int GameVersion { get; set; }
     public string Season { get; set; } = "";       // S1/S2/S3
-    public string MyDan { get; set; } = "";
+    public string MyDan { get; set; } = "";     // ewgf 는 단 이름, wavu 는 "#숫자"
     public string OppDan { get; set; } = "";
+    // 단(숫자) 원본. wavu 만 준다 — 승단 이력은 크기 비교가 필요해서 문자열로는 안 된다.
+    public int? MyRank { get; set; }
+    public int? OppRank { get; set; }
     public string Region { get; set; } = "";
 }

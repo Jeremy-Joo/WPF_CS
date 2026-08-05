@@ -6,12 +6,9 @@ namespace TekkenStats.Core;
 public static class EwgfCollector
 {
     public const string Ewgf = "https://ewgf.gg";
-    public const string CanceledError = "취소됨";
+    public const string CanceledError = Collect.CanceledError;
 
-    public sealed record Result(string PlayerId, int Count, string? OutPath, string Error,
-        string PlayerName = "", IReadOnlyList<MatchRecord>? Records = null);
-
-    public static async Task<Result> CollectAsync(
+    public static async Task<CollectResult> CollectAsync(
         string playerId, DateTime? start, DateTime? end, string outRoot, string profileDir, Action<string> log,
         CancellationToken ct = default)
     {
@@ -22,7 +19,7 @@ public static class EwgfCollector
             await session.StartAsync(url, ct);
             // Cloudflare 통과(순수 크롬 상태에서 CDP HTTP title 로 감지) → 통과 후에만 Playwright 연결.
             if (!await session.WaitPastCloudflareAsync(ct: ct))
-                return new Result(playerId, 0, null,
+                return new CollectResult(playerId, 0, null,
                     "Cloudflare verification did not complete. Open ewgf.gg once in normal Chrome on this PC, then run again.");
             await session.ConnectAsync(ct);
             try
@@ -42,45 +39,35 @@ public static class EwgfCollector
             log($"[정규화] 내 경기 {recs.Count}건  이름='{name}'");
 
             // 날짜 필터 (지정 시)
-            string tag = "";
-            if (start.HasValue || end.HasValue)
+            string tag = Collect.DateTag(start, end);
+            if (tag.Length > 0)
             {
                 int before = recs.Count;
-                recs = recs.Where(r =>
-                    (!start.HasValue || r.Dt.Date >= start.Value.Date) &&
-                    (!end.HasValue || r.Dt.Date <= end.Value.Date)).ToList();
+                recs = Collect.FilterByDate(recs, start, end);
                 log($"[기간필터] {recs.Count}/{before}건");
-                tag = $"_{(start?.ToString("yyyyMMdd") ?? "")}-{(end?.ToString("yyyyMMdd") ?? "")}";
             }
 
             if (recs.Count == 0)
-                return new Result(playerId, 0, null, "경기 없음(식별코드/기간 확인)");
+                return new CollectResult(playerId, 0, null, "경기 없음(식별코드/기간 확인)");
 
-            string safe = Sanitize(string.IsNullOrEmpty(name) ? playerId : name);
+            string safe = Collect.Sanitize(string.IsNullOrEmpty(name) ? playerId : name);
             string stamp = DateTime.Now.ToString("yyyy_MMdd_HHmmss");   // 생성 시각: 연_월일_시분초
             string outPath = Path.Combine(outRoot, safe, $"{safe}_{playerId}_ewgf{tag}_{stamp}.xlsx");
             string saved = EwgfReport.WriteWorkbook(recs, outPath);
             log($"[완료] {saved}");
-            return new Result(playerId, recs.Count, saved, "", name, recs);
+            return new CollectResult(playerId, recs.Count, saved, "", name, recs);
         }
         catch (OperationCanceledException)
         {
             log("[중지됨] 사용자 요청으로 중지했습니다.");
-            return new Result(playerId, 0, null, CanceledError);
+            return new CollectResult(playerId, 0, null, CanceledError);
         }
         catch (Exception ex)
         {
             log($"[오류 상세] {ex.GetType().Name}: {ex.Message}");
             for (var inner = ex.InnerException; inner != null; inner = inner.InnerException)
                 log($"[내부 오류] {inner.GetType().Name}: {inner.Message}");
-            return new Result(playerId, 0, null, BrowserSession.Friendly(ex));
+            return new CollectResult(playerId, 0, null, BrowserSession.Friendly(ex));
         }
-    }
-
-    private static string Sanitize(string s)
-    {
-        foreach (var c in Path.GetInvalidFileNameChars())
-            s = s.Replace(c, '_');
-        return s.Trim();
     }
 }

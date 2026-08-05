@@ -2,7 +2,14 @@ using Microsoft.Playwright;
 
 namespace TekkenStats.Core;
 
-/// <summary>wavu 전체 수집: 페이지 로드 → Next 클릭 누적 → 날짜필터 → 엑셀. (파이썬 main.py run 포팅)</summary>
+/// <summary>
+/// wavu 전체 수집(구형): 페이지 로드 → Next 클릭 누적 → 날짜필터 → 엑셀. (파이썬 main.py run 포팅)
+///
+/// <b>더 이상 쓰지 않는다. <see cref="WavuApiCollector"/> 를 쓸 것.</b>
+/// 이 경로가 쓰는 HTML 페이지네이션(<c>?before=</c>)은 Cloudflare 403 에 막힌다.
+/// 공식 JSON API 는 요청 한 번으로 전체 이력을 주므로 이 방식이 필요한 상황이 없다.
+/// UI 에 연결돼 있지 않으며, 남겨둔 건 <see cref="WavuParser"/> 회귀 검증용 참조뿐이다.
+/// </summary>
 public static class WavuCollector
 {
     public const string Base = "https://wank.wavu.wiki";

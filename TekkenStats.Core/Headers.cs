@@ -23,6 +23,21 @@ public static class Headers
         ["dt"] = "dt[일시]",
         ["my_rating"] = "my_rating[레이팅]",
         ["result"] = "result[결과]",
+        // 아래는 wavu 경로에서 추가된 시트들의 컬럼
+        ["Session"] = "Session[세션]",
+        ["Start"] = "Start[시작]",
+        ["End"] = "End[종료]",
+        ["RatingGap"] = "RatingGap[레이팅차]",
+        ["AvgRatingDelta"] = "AvgRatingDelta[평균증감]",
+        ["Share(%)"] = "Share(%)[비중]",
+        ["From"] = "From[이전단]",
+        ["To"] = "To[이후단]",
+        ["Change"] = "Change[변동]",
+        ["PrevGames"] = "PrevGames[직전단경기수]",
+        ["PrevWinRate(%)"] = "PrevWinRate(%)[직전단승률]",
+        ["Unit"] = "Unit[구분]",
+        ["Bucket"] = "Bucket[항목]",
+        ["Season"] = "Season[시즌]",
     };
 
     private static readonly Dictionary<string, string> Round = new()
